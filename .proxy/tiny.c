@@ -11,9 +11,9 @@
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize);
+void serve_static(int fd, char *filename, int filesize, char *method);
 void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs);
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
                  char *longmsg);
 
@@ -59,9 +59,12 @@ void doit(int fd)
   // rio_readlineb의 래핑함수 - rio_readlineib : 텍스트 줄을 파일 rio에서 읽고 이것을 문자열 메모리 buf로 복사하고 textline을 NULL문자로 종료시킨다.
   // 위 코드가 종료되는 조건은 파라미터로 입력된 MAXLINE까지 읽거나, 읽는 도중 EOF가 발생하였거나, 혹은 한줄 입력의 경우 개행문자를 만난경우가 해당한다.
   printf("Request headers:\n");
-  printf("%s", buf);                             // 문자열 buf print 한다.
-  sscanf(buf, "%s %s %s", method, uri, version); // 문자열 buff를 method, uri, version으로 분리하여 저장한다.
-  if (strcasecmp(method, "GET"))                 // 대소문자를 무시하고 각각의 문자열을 비교한다. GET메소드의 여부를 확인한다.
+  printf("%s", buf);
+  // 문자열 buf print 한다.
+  sscanf(buf, "%s %s %s", method, uri, version);
+  // 문자열 buff를 method, uri, version으로 분리하여 저장한다.
+  if (!(strcasecmp(method, "GET") == 0 || strcasecmp(method, "HEAD") == 0))
+  // 대소문자를 무시하고 각각의 문자열을 비교한다. 메소드의 여부를 확인한다.
   // 2개의 문자열이 같으면 0이 출력됨 다르면 음수 혹은 양수가 나옴
   {
     clienterror(fd, method, "501", "NOT implemented", "Tiny does not implement this method");
@@ -69,9 +72,11 @@ void doit(int fd)
   }
   read_requesthdrs(&rio);
 
-  is_static = parse_uri(uri, filename, cgiargs); // uri를 파일 이름과 cgi 인자 문자열(비어있을 수도 있음)으로 분석
+  is_static = parse_uri(uri, filename, cgiargs);
+  // uri를 파일 이름과 cgi 인자 문자열(비어있을 수도 있음)으로 분석
   // 해당 요청이 정적 혹은 동적 컨텐츠를 위한 것인지 나타내는 flag를 설정한다.
-  if (stat(filename, &sbuf) < 0) // 파일이 디스크 상에 있지 않으면 즉시 error message를 보낸다.
+  if (stat(filename, &sbuf) < 0)
+  // 파일이 디스크 상에 있지 않으면 즉시 error message를 보낸다.
   // stat함수를 이용하면 파일의 상태를 알아올 수 있다. 첫번째 인자로 주어진 filename의 상태를 얻어와서 두번째 인자인 sbuf에 채워넣는다. 성공할 경우 0 실패했을 경우 -1을 반환한다.
   {
     clienterror(fd, filename, "404", "Not found", "Tiny couldn't find this file");
@@ -80,7 +85,8 @@ void doit(int fd)
 
   if (is_static) // 요청이 정적 컨텐츠를 위한 것이라면
   {
-    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) // 이 파일이 regular file인지 읽기 권한이 사용자에게 있는지 확인한다.
+    if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode))
+    // 이 파일이 regular file인지 읽기 권한이 사용자에게 있는지 확인한다.
     {
       // sbuf의 파일 형식이 regular file인지 확인하는 용도이다.
       // #define	S_ISREG(mode)	 __S_ISTYPE((mode), __S_IFREG) 해당 파일형식이 __S_IFREG와 일치하는지 확인하는 매크로임
@@ -91,7 +97,7 @@ void doit(int fd)
       // S_IRUSR -> 실행권한이 사용자 자신에게 있는지 확인하는 매크로이다. __S_IEXEC 0100이라는 매크로로 확인하는듯.
       clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
     }
-    serve_static(fd, filename, sbuf.st_size); // 정적 컨텐츠를 클라이언트에 제공한다.
+    serve_static(fd, filename, sbuf.st_size, method); // 정적 컨텐츠를 클라이언트에 제공한다.
   }
   else // 해당 요청이 동적컨텐츠에 관련된 것이라면
   {
@@ -99,7 +105,7 @@ void doit(int fd)
     {
       clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
     }
-    serve_dynamic(fd, filename, cgiargs);
+    serve_dynamic(fd, filename, cgiargs, method);
   }
 }
 
@@ -178,7 +184,7 @@ int parse_uri(char *uri, char *filename, char *cgiargs) // 동적 컨텐츠라�
   }
 }
 
-void serve_static(int fd, char *filename, int filesize)
+void serve_static(int fd, char *filename, int filesize, char *method)
 {
   int srcfd;
   char *srcp, filetype[MAXLINE], buf[MAXBUF];
@@ -194,6 +200,8 @@ void serve_static(int fd, char *filename, int filesize)
   printf("Response headers:\n");
   printf("%s", buf);
 
+  if (strcasecmp(method, "HEAD") == 0)
+    return;
   // 요청한 파일의 내용을 fd로 복사해서 body를 client로 보낸다.
   srcfd = Open(filename, O_RDONLY, 0); // filename을 open하고 (읽기전용으로) 식별자 srcfd을 얻는다.
   // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
@@ -229,7 +237,7 @@ void get_filetype(char *filename, char *filetype)
     strcpy(filetype, "text/plain");
 }
 
-void serve_dynamic(int fd, char *filename, char *cgiargs)
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *method)
 {
   char buf[MAXLINE], *emptylist[] = {NULL};
   sprintf(buf, "HTTP/1.0 200 OK\r\n");
@@ -246,6 +254,7 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
     setenv("QUERY_STRING", cgiargs, 1);
     // int setenv(const char *name, const char *value, int overwrite);
     // 환경에 name이 존재하지 않으면 name변수에 value를 추가한다 overwrite가 0이면 값을 추가할 수 없다.
+    setenv("REQUEST_METHOD", method, 1);
     Dup2(fd, STDOUT_FILENO); /* Redirect stdout to client */
     // int dup2(int fd, int fd2); fd식별자의 값을 fd2로 바꿔준다.
     Execve(filename, emptylist, environ); /* Run CGI program */
